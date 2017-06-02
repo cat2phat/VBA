@@ -1,0 +1,293 @@
+https://codereview.stackexchange.com/questions/135926/managing-a-programmatically-accessible-stack-trace
+
+VBA has a call stack... but there's no programmatic way to tap into it, which means in order to get a stack trace for a runtime error, one has to manage it manually.
+
+Here's some example code that demonstrates a custom CallStack class in action:
+
+Option Explicit
+Private Const ModuleName As String = "Module1"
+
+Sub DoSomething(ByVal value1 As Integer, ByVal value2 As Integer, ByVal value3 As String)
+    CallStack.Push ModuleName, "DoSomething", value1, value2, value3
+    TestSomethingElse value1
+    CallStack.Pop
+End Sub
+
+Private Sub TestSomethingElse(ByVal value1 As Integer)
+    CallStack.Push ModuleName, "TestSomethingElse", value1
+    On Error GoTo CleanFail
+
+    Debug.Print value1 / 0
+
+CleanExit:
+    CallStack.Pop
+    Exit Sub
+CleanFail:
+    PrintErrorInfo
+    Resume CleanExit
+End Sub
+
+Public Sub PrintErrorInfo()
+    Debug.Print "Runtime error " & Err.Number & ": " & Err.Description & vbNewLine & CallStack.ToString
+End Sub
+Running DoSomething 42, 12, "test" produces the following output:
+
+Runtime error 11: Division by zero
+at Module1.TestSomethingElse({Integer:42})
+at Module1.DoSomething({Integer:42},{Integer:12},{String:"test"})
+The value of this isn't so much the stack trace itself (after all the VBE's debugger has a call stack debug window), but the ability to log runtime errors along with that precious stack trace.
+
+Here's the CallStack class - note that I opted to set its VB_PredeclaredId attribute to True so that it could be used as a globally-scoped CallStack object (similar to a C# static class). I chose to work off a Collection for simplicity, and because I didn't mind the performance penalty of using a For loop to iterate its items in reverse. I did consider using an array instead, but it seemed the boundary handling and constant resizing left a sour taste to the code: I deliberately preferred the readability and simplicity of a Collection over the For-loop performance of an array.
+
+VERSION 1.0 CLASS
+BEGIN
+  MultiUse = -1  'True
+END
+Attribute VB_Name = "CallStack"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = False
+Option Explicit
+Private frames As New Collection
+
+Public Sub Push(ByVal module As String, ByVal member As String, ParamArray parameterValues() As Variant)
+Attribute Push.VB_Description = "Pushes a new stack frame onto the call stack. Call once at the entry point of each procedure to trace."
+    Dim values() As Variant
+    values = parameterValues
+    frames.Add StackFrame.Create(module, member, values)
+End Sub
+
+Public Function Pop() As IStackFrame
+Attribute Pop.VB_Description = "Removes the last stack frame from the top of the stack. Call once at the exit point of each traced procedure."
+    Set Pop = Peek
+    frames.Remove frames.Count
+End Function
+
+Public Function Peek() As IStackFrame
+Attribute Peek.VB_Description = "Returns the top-most stack frame."
+    Set Peek = frames(frames.Count)
+End Function
+
+Public Property Get Count() As Long
+Attribute Count.VB_Description = "Gets the depth of the call stack."
+    Count = frames.Count
+End Property
+
+Public Function ToString() As String
+Attribute ToString.VB_Description = "Returns a String containing the stack trace."
+    Dim result As String
+    Dim index As Long
+    For index = frames.Count To 1 Step -1
+        result = result & "at " & frames(index).ToString & IIf(index = 1, vbNullString, vbNewLine)
+    Next
+    ToString = result
+End Function
+Because I wanted a "stack frame" to be essentially immutable, I only exposed it via a read-only IStackFrame interface:
+
+VERSION 1.0 CLASS
+BEGIN
+  MultiUse = -1  'True
+END
+Attribute VB_Name = "IStackFrame"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = False
+Attribute VB_Exposed = False
+Option Explicit
+
+Public Property Get ModuleName() As String
+Attribute ModuleName.VB_Description = "Gets the name of the module for this instance."
+End Property
+
+Public Property Get MemberName() As String
+Attribute ModuleName.VB_Description = "Gets the name of the member for this instance."
+End Property
+
+Public Property Get ParameterValue(ByVal index As Integer) As Variant
+Attribute ModuleName.VB_Description = "Gets the value of the parameter at the specified index."
+End Property
+
+Public Function ToString() As String
+Attribute ToString.VB_Description = "Returns a string representation of the member and its arguments."
+End Function
+The IStackFrame interface is implemented by the StackFrame class, which also has a VB_PredeclaredId attribute set to True, so that I could call its Create factory method in CallStack as I would a constructor - the instance members (e.g. the Create method, and Self accessor and Property Let mutators) aren't accessible to client code that only sees it through the IStackFrame interface:
+
+VERSION 1.0 CLASS
+BEGIN
+  MultiUse = -1  'True
+END
+Attribute VB_Name = "StackFrame"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = False
+Option Explicit
+Implements IStackFrame
+
+Private Type TStackFrame
+    ModuleName As String
+    MemberName As String
+    values As Collection
+End Type
+
+Private this As TStackFrame
+
+Public Function Create(ByVal module As String, ByVal member As String, ByRef parameterValues() As Variant) As IStackFrame
+Attribute Create.VB_Description = "Creates a new instance of an object representing a stack frame, i.e. a procedure call and its arguments."
+    With New StackFrame
+        .ModuleName = module
+        .MemberName = member
+
+        Dim index As Integer
+        For index = LBound(parameterValues) To UBound(parameterValues)
+            .AddParameterValue parameterValues(index)
+        Next
+
+        Set Create = .Self
+    End With
+End Function
+
+Public Property Get Self() As IStackFrame
+Attribute Self.VB_Description = "Gets a reference to this instance."
+    Set Self = Me
+End Property
+
+Public Property Get ModuleName() As String
+Attribute ModuleName.VB_Description = "Gets/sets the name of the module for this instance."
+    ModuleName = this.ModuleName
+End Property
+
+Public Property Let ModuleName(ByVal value As String)
+    this.ModuleName = value
+End Property
+
+Public Property Get MemberName() As String
+Attribute ModuleName.VB_Description = "Gets/sets the name of the member for this instance."
+    MemberName = this.MemberName
+End Property
+
+Public Property Let MemberName(ByVal value As String)
+    this.MemberName = value
+End Property
+
+Public Property Get ParameterValue(ByVal index As Integer) As Variant
+Attribute ModuleName.VB_Description = "Gets the value of the parameter at the specified index."
+    ParameterValue = this.values(index)
+End Property
+
+Public Sub AddParameterValue(ByRef value As Variant)
+Attribute AddParameterValue.VB_Description = "Adds the specified parameter value to this instance."
+    this.values.Add value
+End Sub
+
+Private Sub Class_Initialize()
+    Set this.values = New Collection
+End Sub
+
+Private Sub Class_Terminate()
+    Set this.values = Nothing
+End Sub
+
+Private Property Get IStackFrame_MemberName() As String
+    IStackFrame_MemberName = this.MemberName
+End Property
+
+Private Property Get IStackFrame_ModuleName() As String
+    IStackFrame_ModuleName = this.ModuleName
+End Property
+
+Private Property Get IStackFrame_ParameterValue(ByVal index As Integer) As Variant
+    IStackFrame_ParameterValue = this.values(index)
+End Property
+
+Private Function IStackFrame_ToString() As String
+
+    Dim result As String
+    result = this.ModuleName & "." & this.MemberName & "("
+
+    Dim index As Integer
+    Dim value As Variant
+    For Each value In this.values
+
+        index = index + 1
+
+        result = result & "{" & TypeName(value) & ":"
+        If IsObject(value) Then
+            result = result & ObjPtr(value)
+        ElseIf IsArray(value) Then
+            result = result & "[" & LBound(value) & "-" & UBound(value) & "]"
+        ElseIf VarType(value) = vbString Then
+            result = result & Chr$(34) & value & Chr$(34)
+        Else
+            result = result & CStr(value)
+        End If
+        result = result & "}" & IIf(index = this.values.Count, vbNullString, ",")
+
+    Next
+
+    result = result & ")"
+    IStackFrame_ToString = result
+
+End Function
+The Create factory method takes a "normal" array for parameter values - it's meant to be used by the CallStack class, not by client/user code. The user code API takes a ParamArray parameter instead, so that the parameter values can simply be enumerated without any other required code; this allows CallStack.Push to be the first executable line of code in every procedure of the user's code.
+
+Of course, manually managing the stack trace means it's the user code's responsibility to ensure every method pushes itself into the stack, and pops itself out at every exit point: bad error handling, or careless refactorings, and the custom call stack starts telling lies - it's somewhat inherently brittle, but the ability to log errors with a detailed stack trace seems to outweight the additional maintenance cost.
+
+Is there anything in the implementation (or interface / API) that doesn't look right? Any room for improvement? Simplification? Any oversight?
+
+
+vba api stack
+shareimprove this question
+edited Apr 13 at 12:40
+
+Community♦
+1
+asked Jul 26 '16 at 5:53
+
+Mat's Mug♦
+57.3k8131369
+1	 	
+Saw this and thought it could use some activity - why did you use integer on some of those? – Raystafarian Sep 1 '16 at 20:16
+2	 	
+@Raystafarian most likely just habit. Should probably be a Byte, anyone writing a VBA procedure with 255+ arguments has worse problems than not having a programmatically accessible stack trace =) – Mat's Mug♦ Sep 1 '16 at 20:52
+add a comment
+1 Answer
+active oldest votes
+up vote
+1
+down vote
+The IStackFrame_ToString implementation is overkill. While the parameter types and values are extremely useful in specific error-handling scenarios, outputting them as standard part of the stack trace doesn't look right:
+
+Runtime error 11: Division by zero
+at Module1.TestSomethingElse({Integer:42})
+at Module1.DoSomething({Integer:42},{Integer:12},{String:"test"})
+Would feel less cluttered and easier to read as:
+
+Runtime error 11: Division by zero
+at Module1.TestSomethingElse
+at Module1.DoSomething
+Therefore, I'd implement it simply as such:
+
+Private Function IStackFrame_ToString() As String
+    IStackFrame_ToString = this.ModuleName & "." & this.MemberName
+End Function
+And then let the client's error-handling code Peek at the stack trace and output/log parameter values when they are deemed relevant. After all, the pointer address of an object isn't really useful beyond "is it 0 or anything else" (ObjPtr(Nothing) returns 0, which is indeed useful when you're up against an object reference not set runtime error 91) - the actual address in itself is... meaningless junk, especially since these values are pretty much single-use (e.g. after executing  Set foo = New Bar, the value returned by ObjPtr(foo) will be different at every execution).
+
+Let's go wild here. The range of valid values for an Integer is -32,768 to 32,767. I can't imagine a procedure taking -12 arguments, and I'm not sure one with over 255 arguments would even compile - so Integer is definitely overkill for the index of ParameterValue:
+
+Public Property Get ParameterValue(ByVal index As Integer) As Variant
+Attribute ModuleName.VB_Description = "Gets the value of the parameter at the specified index."
+    ParameterValue = this.values(index)
+End Property
+The only unsigned integer type in VBA is Byte, ranging from 0 to 255; it also happens to be the smallest available integer type. I'd most probably want to strangle whoever wrote a procedure taking 255 arguments, and I'm not sure why but if there's a limit to the number of arguments that a VBA procedure can take, 255 seems a likely possible number. So Integer could be harmlessly replaced with Byte wherever it's used to iterate parameters (e.g. in Create) or access them (e.g. ParameterValue).
+
+The values collection will be able to hold more than that though, so there should be some code to validate the inputs and trap a runtime error in CallStack.Push... because you definitely don't want your call stack to be the source of an error!
+
+shareimprove this answer
+edited Sep 1 '16 at 22:31
+answered Sep 1 '16 at 22:18
+
+Mat's Mug♦
+57.3k8131369
+add a comment
