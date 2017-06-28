@@ -4,6 +4,19 @@ Option Explicit
 Private Declare Function GetWindowPlacement Lib "User32" (ByVal hwnd As Long, lpwndpl As WINDOWPLACEMENT) As Long
 Private Declare Function MoveWindow Lib "User32" (ByVal hwnd As Long, ByVal X As Long, ByVal y As Long, ByVal nWidth As Long, ByVal nHeight As Long, ByVal bRepaint As Long) As Long
 
+
+Private Declare Function SystemParametersInfo Lib "User32" Alias "SystemParametersInfoA" (ByVal uAction As Long, ByVal uParam As Long, lpvParam As Any, ByVal fuWinIni As Long) As Long
+Private Declare Function GetSystemMetrics Lib "User32" (ByVal nIndex As Integer) As Integer
+Private Declare Function GetDesktopWindow Lib "User32" () As Long
+Private Declare Function GetDC Lib "User32" (ByVal hwnd As Long) As Long
+Private Declare Function GetDeviceCaps Lib "gdi32" (ByVal hdc As Long, ByVal nIndex As Long) As Long
+Private Declare Function ReleaseDC Lib "User32" (ByVal hwnd As Long, ByVal hdc As Long) As Long
+
+Private Const LOGPIXELSX = 88
+Private Const SPI_GETWORKAREA = 48
+
+
+
 Type POINTAPI
     X As Long
     y As Long
@@ -24,6 +37,28 @@ Type WINDOWPLACEMENT
     ptMaxPosition As POINTAPI
     rcNormalPosition As RECT '****'
 End Type
+
+'Screen resolution functions
+Public Function GetPixelX() As Long: GetPixelX = GetSystemMetrics(0): End Function
+Public Function GetPixelY() As Long: GetPixelY = GetSystemMetrics(1): End Function
+
+'Sets the value of apiRECT to the available desktop space minus the taskbar
+Public Function GetDesktopArea(ByRef apiRECT As RECT)
+     Call SystemParametersInfo(SPI_GETWORKAREA, vbNull, apiRECT, 0)
+End Function
+
+'Returns the windows DPI setting.  Default is 96
+Public Function GetDPI() As Integer
+    Dim hWndDesk As Long, hDCDesk As Long
+    Dim logPix As Long, r As Long
+
+    hWndDesk = GetDesktopWindow() 'Get the handle of the desktop window
+    hDCDesk = GetDC(hWndDesk) 'Get the desktop window's device context
+    logPix = GetDeviceCaps(hDCDesk, LOGPIXELSX) 'Get the width of the screen
+    r = ReleaseDC(hWndDesk, hDCDesk) 'Release the device context
+    GetDPI = logPix
+End Function
+
 
 '*****
 'MODIFY WINDOW DIMENSION FUNCTION CALLS
